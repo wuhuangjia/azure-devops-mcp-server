@@ -1,29 +1,28 @@
 # azure-devops-mcp-server MCP Server
 
-透過自然語言更方便地與 Azure DevOps 互動
+透過自然語言更方便地與 Azure DevOps 互動。
 
-This is a TypeScript-based MCP server that implements a simple notes system. It demonstrates core MCP concepts by providing:
-
-- Resources representing text notes with URIs and metadata
-- Tools for creating new notes
-- Prompts for generating summaries of notes
+This is a TypeScript-based MCP server designed to interact with Azure DevOps Work Items using the Azure DevOps REST API via `axios`.
 
 ## Features
 
-### Resources
-- List and access notes via `note://` URIs
-- Each note has a title, content and metadata
-- Plain text mime type for simple content access
-
 ### Tools
-- `create_note` - Create new text notes
-  - Takes title and content as required parameters
-  - Stores note in server state
 
-### Prompts
-- `summarize_notes` - Generate a summary of all stored notes
-  - Includes all note contents as embedded resources
-  - Returns structured prompt for LLM summarization
+This server provides the following tools to manage Azure DevOps resources:
+
+- **`create_work_item`**: 在 Azure DevOps 中建立新的 Work Item (例如 User Story, Bug, Task)。
+  - 必要參數：`type` (類型), `title` (標題)。
+  - 可選參數：`description` (描述), `areaPath` (區域路徑), `iterationPath` (迭代路徑), `assignedTo` (指派對象), `tags` (標籤)。
+- **`get_work_item_details`**: 根據 ID 取得 Azure DevOps Work Item 的詳細資訊。
+  - 必要參數：`id` (Work Item ID)。
+- **`update_work_item`**: 更新現有 Azure DevOps Work Item 的欄位 (例如狀態、指派對象)。
+  - 必要參數：`id` (Work Item ID), `updates` (包含要更新欄位和值的物件)。
+  - 可選參數：`comment` (更新評論)。
+- **`search_work_items`**: 搜尋 Azure DevOps Work Items。可依專案、類型、標題或 ID 進行篩選。
+  - 可選參數：`query` (搜尋關鍵字), `projectName` (專案名稱), `workItemType` (工作項目類型)。
+- **`list_projects`**: 列出 Azure DevOps 組織中的所有專案。
+- **`get_project_details`**: 根據專案 ID 或名稱取得 Azure DevOps 專案的詳細資訊。
+  - 必要參數：`projectIdOrName` (專案 ID 或名稱)。
 
 ## Development
 
@@ -53,11 +52,20 @@ On Windows: `%APPDATA%/Claude/claude_desktop_config.json`
 {
   "mcpServers": {
     "azure-devops-mcp-server": {
-      "command": "/path/to/azure-devops-mcp-server/build/index.js"
+      "command": "C:\\Program Files\\nodejs\\node.exe", // Or your Node.js path
+      "args": [
+        "C:\\Tools\\Cline\\MCP\\azure-devops-mcp-server\\build\\index.js" // Adjust path if needed
+      ],
+      "env": {
+        "AZURE_DEVOPS_ORG_URL": "YOUR_ORG_URL", // e.g., https://dev.azure.com/YourOrganizationName
+        "AZURE_DEVOPS_PAT": "YOUR_PERSONAL_ACCESS_TOKEN"
+      }
     }
   }
 }
 ```
+
+**重要：** 您需要將 `YOUR_ORG_URL` 替換為您的 Azure DevOps 組織 URL，並將 `YOUR_PERSONAL_ACCESS_TOKEN` 替換為具有讀寫 Work Item 權限的有效 Personal Access Token (PAT)。
 
 ### Debugging
 
