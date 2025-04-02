@@ -125,6 +125,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           type: "object",
           properties: {
             id: { type: "number", description: "要取得的 Work Item ID" },
+            fields: { type: "array", items: { type: "string" }, description: "要取得的欄位列表 (可選，使用欄位參考名稱，例如 'System.Title', 'System.State')。若未提供，則回傳所有欄位。" },
           },
           required: ["id"],
         },
@@ -155,6 +156,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             query: { type: "string", description: "用於搜尋標題或 ID 的關鍵字 (可選，若僅依專案/類型篩選)" },
             projectName: { type: "string", description: "要搜尋的專案名稱 (可選，預設為伺服器啟動時偵測到的第一個專案)" },
             workItemType: { type: "string", description: "要篩選的工作項目類型，例如 'User Story', 'Bug' (可選)" },
+            fields: { type: "array", items: { type: "string" }, description: "要取得的欄位列表 (可選，使用欄位參考名稱)。若未提供，則回傳預設欄位 (ID, Title, State, Type, AssignedTo)。" },
           },
           // No longer required 'query' if filtering by project/type
         },
@@ -226,14 +228,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case "get_work_item_details": {
         const id = args.id as number;
+        const requestedFields = args.fields as string[] | undefined;
+
         if (typeof id !== 'number') {
           throw new McpError(ErrorCode.InvalidParams, "缺少或無效的參數: id (必須是數字)");
         }
+
+        // Construct URL based on whether specific fields are requested
         // https://learn.microsoft.com/en-us/rest/api/azure/devops/wit/work-items/get-work-item?view=azure-devops-rest-7.1&tabs=HTTP
-        const url = `/_apis/wit/workitems/${id}?api-version=${API_VERSION}&$expand=all`;
+        let url = `/_apis/wit/workitems/${id}?api-version=${API_VERSION}`;
+        if (requestedFields && Array.isArray(requestedFields) && requestedFields.length > 0) {
+          // Use the 'fields' parameter if provided
+          url += `&fields=${requestedFields.map(encodeURIComponent).join(',')}`;
+        } else {
+          // Default to $expand=all if no specific fields are requested
+          url += '&$expand=all';
+        }
+
         const response = await instance.get(url);
+        // Always return text content with stringified JSON
         return {
-          content: [{ type: "json", json: response.data }],
+          content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }],
         };
       }
 
@@ -272,6 +287,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const queryText = args.query as string | undefined;
         const targetProjectName = args.projectName as string | undefined ?? currentProjectName; // Use provided or default
         const workItemType = args.workItemType as string | undefined;
+        const requestedFields = args.fields as string[] | undefined;
 
         // Build WHERE clauses
         const conditions: string[] = [`[System.TeamProject] = '${targetProjectName.replace(/'/g, "''")}'`]; // Always filter by project
@@ -314,15 +330,40 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (ids.length === 0) {
           return { content: [{ type: "text", text: "找不到符合條件的 Work Items (ID 提取失敗)。" }] };
         }
+
+        // Determine fields for batch request
+        const defaultFields = ["System.Id", "System.Title", "System.State", "System.WorkItemType", "System.AssignedTo"];
+        const fieldsToFetch = (requestedFields && Array.isArray(requestedFields) && requestedFields.length > 0)
+          ? requestedFields
+          : defaultFields;
+
         const batchUrl = `/_apis/wit/workitemsbatch?api-version=${API_VERSION}-preview.1`;
         const batchResponse = await instance.post(batchUrl, {
           ids: ids,
-          fields: ["System.Id", "System.Title", "System.State", "System.WorkItemType", "System.AssignedTo"], // Specify fields
-          $expand: "fields" // Optional: expand fields
+          fields: fieldsToFetch, // Use determined fields
+          // $expand is not needed when specifying fields
         });
 
+        // Prepare summarized response if fields were not explicitly requested
+        let responseData = batchResponse.data.value;
+        let responseType: "json" | "text" = "json";
+        let responseText = "";
+
+        if (!requestedFields || requestedFields.length === 0) {
+          // Summarize if default fields were used
+          responseType = "text";
+          responseText = "搜尋結果 (摘要):\n" + responseData.map((item: any) =>
+            `- ID: ${item.id}, Type: ${item.fields?.['System.WorkItemType']}, State: ${item.fields?.['System.State']}, Title: ${item.fields?.['System.Title']}`
+          ).join('\n');
+          // Add a note about how to get full details
+          responseText += "\n\n提示：若需完整 JSON，請在下次搜尋時使用 `fields` 參數指定欄位，或使用 `get_work_item_details` 取得單一項目詳情。";
+        }
+
+
+        // Always return text, either summarized or full JSON stringified
+        const finalText = responseType === "text" ? responseText : JSON.stringify(responseData, null, 2);
         return {
-          content: [{ type: "json", json: batchResponse.data.value }], // The result is in the 'value' property
+          content: [{ type: "text", text: finalText }],
         };
       }
 
@@ -330,12 +371,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // https://learn.microsoft.com/en-us/rest/api/azure/devops/core/projects/list?view=azure-devops-rest-7.1
         const url = `/_apis/projects?api-version=${API_VERSION}`;
         const response = await instance.get(url);
-        const projects = response.data.value; // Array of project objects
-        const responseContent = [{ type: "text", text: JSON.stringify(projects, null, 2) }];
-        // console.error("Returning from list_projects:", JSON.stringify(responseContent)); // Removed debug log
+        const projects = response.data.value as { id: string, name: string, description?: string }[]; // Array of project objects
+
+        if (!projects || projects.length === 0) {
+          return { content: [{ type: "text", text: "找不到任何專案。" }] };
+        }
+
+        // Create a summarized text response
+        const summaryText = `找到 ${projects.length} 個專案:\n` + projects.map(p =>
+          `- ${p.name} (ID: ${p.id})${p.description ? ` - ${p.description}` : ''}`
+        ).join('\n');
+
         return {
-          // Return the project list as a JSON string within a text content block
-          content: responseContent,
+          content: [{ type: "text", text: summaryText }],
         };
       }
 
