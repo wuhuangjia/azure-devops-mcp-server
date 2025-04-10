@@ -180,6 +180,21 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ["projectIdOrName"],
         },
       },
+      {
+        name: "link_commit_to_work_item",
+        description: "將 Git Commit 連結到 Azure DevOps Work Item。",
+        inputSchema: {
+          type: "object",
+          properties: {
+            workItemId: { type: "number", description: "要連結的 Work Item ID" },
+            commitSha: { type: "string", description: "要連結的 Git Commit SHA (完整的 40 字元)" },
+            repositoryName: { type: "string", description: "Commit 所在的儲存庫名稱" },
+            projectName: { type: "string", description: "Work Item 和儲存庫所在的專案名稱 (可選，預設為伺服器預設專案)" },
+            comment: { type: "string", description: "連結的說明註解 (可選)" },
+          },
+          required: ["workItemId", "commitSha", "repositoryName"],
+        },
+      },
     ],
   };
 });
@@ -399,6 +414,51 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }],
         };
       }
+
+      case "link_commit_to_work_item": {
+        const workItemId = args.workItemId as number;
+        const commitSha = args.commitSha as string;
+        const repositoryName = args.repositoryName as string;
+        const targetProjectName = args.projectName as string | undefined ?? currentProjectName;
+        const linkComment = args.comment as string | undefined ?? "Linked by MCP Server";
+
+        if (typeof workItemId !== 'number' || !commitSha || !repositoryName) {
+          throw new McpError(ErrorCode.InvalidParams, "缺少必要的參數: workItemId (數字), commitSha (字串), repositoryName (字串)");
+        }
+        if (commitSha.length !== 40) {
+          throw new McpError(ErrorCode.InvalidParams, "無效的參數: commitSha 必須是 40 個字元的 SHA");
+        }
+
+        // Construct the commit URL (assuming default Azure DevOps URL structure)
+        const commitUrl = `${ORG_URL}/${encodeURIComponent(targetProjectName)}/_git/${encodeURIComponent(repositoryName)}/commit/${commitSha}`;
+
+        // JSON Patch document to add the artifact link relation
+        // https://learn.microsoft.com/en-us/rest/api/azure/devops/wit/work-items/update?view=azure-devops-rest-7.1#add-a-link
+        const patchDocument = [
+          {
+            op: "add",
+            path: "/relations/-", // Add to the end of the relations array
+            value: {
+              rel: "ArtifactLink", // Relation type for external links like commits
+              url: commitUrl,
+              attributes: {
+                name: "Fixed in Commit", // Standard link type name for commits
+                comment: linkComment
+              }
+            }
+          }
+        ];
+
+        const url = `/_apis/wit/workitems/${workItemId}?api-version=${API_VERSION}-preview.3`;
+        await instance.patch(url, patchDocument, {
+          headers: { 'Content-Type': 'application/json-patch+json' }
+        });
+
+        return {
+          content: [{ type: "text", text: `成功將 Commit ${commitSha.substring(0, 7)} 連結到 Work Item ${workItemId}` }],
+        };
+      }
+
 
       default:
         throw new McpError(ErrorCode.MethodNotFound, `未知的工具: ${request.params.name}`);
