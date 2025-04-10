@@ -127,6 +127,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             id: { type: "number", description: "要取得的 Work Item ID" },
             fields: { type: "array", items: { type: "string" }, description: "要取得的欄位列表 (可選，使用欄位參考名稱，例如 'System.Title', 'System.State')。若未提供，則回傳所有欄位。" },
+            summarize: { type: "boolean", description: "是否只回傳摘要資訊 (預設 false)", default: false },
           },
           required: ["id"],
         },
@@ -246,6 +247,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "get_work_item_details": {
         const id = args.id as number;
         const requestedFields = args.fields as string[] | undefined;
+        const summarize = args.summarize as boolean ?? false; // Get the summarize flag
 
         if (typeof id !== 'number') {
           throw new McpError(ErrorCode.InvalidParams, "缺少或無效的參數: id (必須是數字)");
@@ -263,10 +265,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         const response = await instance.get(url);
-        // Always return text content with stringified JSON
-        return {
-          content: [{ type: "text", text: JSON.stringify(response.data, null, 2) }],
-        };
+        const workItemData = response.data;
+
+        if (summarize) {
+          // Extract key fields for summary
+          const fields = workItemData.fields ?? {};
+          const summaryText = `Work Item ${workItemData.id} 摘要:\n` +
+            `- 標題 (Title): ${fields['System.Title'] ?? 'N/A'}\n` +
+            `- 類型 (Type): ${fields['System.WorkItemType'] ?? 'N/A'}\n` +
+            `- 狀態 (State): ${fields['System.State'] ?? 'N/A'}\n` +
+            `- 指派給 (Assigned To): ${fields['System.AssignedTo']?.displayName ?? '未指派'}\n` +
+            `- 區域路徑 (Area Path): ${fields['System.AreaPath'] ?? 'N/A'}\n` +
+            `- 迭代路徑 (Iteration Path): ${fields['System.IterationPath'] ?? 'N/A'}`;
+          return {
+            content: [{ type: "text", text: summaryText }],
+          };
+        } else {
+          // Return full JSON if not summarizing
+          return {
+            content: [{ type: "text", text: JSON.stringify(workItemData, null, 2) }],
+          };
+        }
       }
 
       case "update_work_item": {
