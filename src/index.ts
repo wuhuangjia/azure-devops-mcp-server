@@ -107,11 +107,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: "object",
           properties: {
+            projectName: { type: "string", description: "要建立 Work Item 的專案名稱 (可選，預設為伺服器偵測到的第一個專案)" },
             type: { type: "string", description: "Work Item 類型 (例如 'User Story', 'Bug', 'Task')" },
             title: { type: "string", description: "Work Item 的標題" },
             description: { type: "string", description: "Work Item 的描述 (HTML 或純文字)" },
-            areaPath: { type: "string", description: "區域路徑 (可選，預設為專案名稱)" },
-            iterationPath: { type: "string", description: "迭代路徑 (可選，預設為專案名稱)" },
+            areaPath: { type: "string", description: "區域路徑 (可選，預設為目標專案名稱)" },
+            iterationPath: { type: "string", description: "迭代路徑 (可選，預設為目標專案名稱)" },
             assignedTo: { type: "string", description: "指派對象的顯示名稱或 Email (可選)" },
             tags: { type: "string", description: "標籤，以分號分隔 (可選)" },
           },
@@ -210,9 +211,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "create_work_item": {
         const type = args.type as string;
         const title = args.title as string;
+        const targetProjectName = args.projectName as string | undefined ?? currentProjectName; // Get project name from args or use default
         const description = args.description as string | undefined;
-        const areaPath = args.areaPath as string | undefined ?? currentProjectName;
-        const iterationPath = args.iterationPath as string | undefined ?? currentProjectName;
+        const areaPath = args.areaPath as string | undefined ?? targetProjectName; // Default Area/Iteration to target project
+        const iterationPath = args.iterationPath as string | undefined ?? targetProjectName;
         const assignedTo = args.assignedTo as string | undefined;
         const tags = args.tags as string | undefined;
 
@@ -230,7 +232,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (assignedTo) patchDocument.push({ op: "add", path: "/fields/System.AssignedTo", value: assignedTo });
         if (tags) patchDocument.push({ op: "add", path: "/fields/System.Tags", value: tags });
 
-        const url = `/${encodeURIComponent(currentProjectName)}/_apis/wit/workitems/$${encodeURIComponent(type)}?api-version=${API_VERSION}-preview.3`;
+        const url = `/${encodeURIComponent(targetProjectName)}/_apis/wit/workitems/$${encodeURIComponent(type)}?api-version=${API_VERSION}-preview.3`; // Use targetProjectName
         const response = await instance.post(url, patchDocument, {
           headers: { 'Content-Type': 'application/json-patch+json' } // Required header for patch operations
         });

@@ -12,7 +12,7 @@ This server provides the following tools to manage Azure DevOps resources:
 
 - **`create_work_item`**: 在 Azure DevOps 中建立新的 Work Item (例如 User Story, Bug, Task)。
   - 必要參數：`type` (類型), `title` (標題)。
-  - 可選參數：`description` (描述), `areaPath` (區域路徑), `iterationPath` (迭代路徑), `assignedTo` (指派對象), `tags` (標籤)。
+  - 可選參數：`projectName` (專案名稱，預設為伺服器偵測到的第一個專案), `description` (描述), `areaPath` (區域路徑，預設為目標專案名稱), `iterationPath` (迭代路徑，預設為目標專案名稱), `assignedTo` (指派對象), `tags` (標籤)。
 - **`get_work_item_details`**: 根據 ID 取得 Azure DevOps Work Item 的詳細資訊。
   - 必要參數：`id` (Work Item ID)。
 - **`update_work_item`**: 更新現有 Azure DevOps Work Item 的欄位 (例如狀態、指派對象)。
