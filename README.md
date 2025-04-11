@@ -77,3 +77,7 @@ npm run inspector
 ```
 
 The Inspector will provide a URL to access debugging tools in your browser.
+
+## 參考資料 (References)
+
+- [Azure DevOps REST API Reference](https://learn.microsoft.com/zh-tw/rest/api/azure/devops/?view=azure-devops-rest-7.2)
