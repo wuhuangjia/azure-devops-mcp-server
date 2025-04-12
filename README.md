@@ -24,6 +24,12 @@ This server provides the following tools to manage Azure DevOps resources:
 - **`list_projects`**: 列出 Azure DevOps 組織中的所有專案。
 - **`get_project_details`**: 根據專案 ID 或名稱取得 Azure DevOps 專案的詳細資訊。
   - 必要參數：`projectIdOrName` (專案 ID 或名稱)。
+- **`link_commit_to_work_item`**: 將 Git Commit 連結到 Azure DevOps Work Item。
+  - 必要參數：`workItemId` (Work Item ID), `commitSha` (Commit SHA), `repositoryName` (儲存庫名稱)。
+  - 可選參數：`projectName` (專案名稱), `comment` (連結說明)。
+  - *注意：已修正先前版本中因組織 URL 結尾斜線可能導致的連結錯誤。*
+- **`add_issue_comment`**: 為現有的 Azure DevOps Work Item 添加評論。
+  - 必要參數：`workItemId` (Work Item ID), `comment` (評論內容)。
 
 ## Development
 

@@ -197,6 +197,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ["workItemId", "commitSha", "repositoryName"],
         },
       },
+      { // Added add_issue_comment definition
+        name: "add_issue_comment",
+        description: "為現有的 Azure DevOps Work Item 添加評論。",
+        inputSchema: {
+          type: "object",
+          properties: {
+            workItemId: { type: "number", description: "要添加評論的 Work Item ID" },
+            comment: { type: "string", description: "要添加的評論內容" },
+          },
+          required: ["workItemId", "comment"],
+        },
+      },
     ],
   };
 });
@@ -450,8 +462,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           throw new McpError(ErrorCode.InvalidParams, "無效的參數: commitSha 必須是 40 個字元的 SHA");
         }
 
-        // Construct the commit URL (assuming default Azure DevOps URL structure)
-        const commitUrl = `${ORG_URL}/${encodeURIComponent(targetProjectName)}/_git/${encodeURIComponent(repositoryName)}/commit/${commitSha}`;
+        // Construct the commit URL, ensuring ORG_URL doesn't have a trailing slash
+        const baseUrl = ORG_URL.replace(/\/$/, ''); // Remove trailing slash if exists
+        const commitUrl = `${baseUrl}/${encodeURIComponent(targetProjectName)}/_git/${encodeURIComponent(repositoryName)}/commit/${commitSha}`;
 
         // JSON Patch document to add the artifact link relation
         // https://learn.microsoft.com/en-us/rest/api/azure/devops/wit/work-items/update?view=azure-devops-rest-7.1#add-a-link
@@ -480,6 +493,33 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
+      case "add_issue_comment": { // Added add_issue_comment implementation
+        const workItemId = args.workItemId as number;
+        const comment = args.comment as string;
+
+        if (typeof workItemId !== 'number' || !comment) {
+          throw new McpError(ErrorCode.InvalidParams, "缺少必要的參數: workItemId (數字) 和 comment (字串)");
+        }
+
+        // JSON Patch document to add a comment to the history
+        // This is equivalent to updating the work item with a history comment
+        const patchDocument = [
+          {
+            op: "add",
+            path: "/fields/System.History",
+            value: comment,
+          }
+        ];
+
+        const url = `/_apis/wit/workitems/${workItemId}?api-version=${API_VERSION}-preview.3`;
+        await instance.patch(url, patchDocument, {
+          headers: { 'Content-Type': 'application/json-patch+json' }
+        });
+
+        return {
+          content: [{ type: "text", text: `成功為 Work Item ${workItemId} 添加評論。` }],
+        };
+      }
 
       default:
         throw new McpError(ErrorCode.MethodNotFound, `未知的工具: ${request.params.name}`);
