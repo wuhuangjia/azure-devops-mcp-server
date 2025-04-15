@@ -28,6 +28,9 @@ This server provides the following tools to manage Azure DevOps resources:
   - 必要參數：`workItemId` (Work Item ID), `commitSha` (Commit SHA), `repositoryName` (儲存庫名稱)。
   - 可選參數：`projectName` (專案名稱), `comment` (連結說明)。
   - *注意：已修正先前版本中因組織 URL 結尾斜線可能導致的連結錯誤。*
+- **`list_work_item_attachments`**: 獲取指定 Azure DevOps Work Item 的附件列表，包含下載 URL。
+  - 必要參數：`workItemId` (Work Item ID)。
+  - 可選參數：`projectName` (專案名稱)。
 - **`add_issue_comment`**: 為現有的 Azure DevOps Work Item 添加評論。
   - 必要參數：`workItemId` (Work Item ID), `comment` (評論內容)。
 
