@@ -197,6 +197,49 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ["workItemId", "commitSha", "repositoryName"],
         },
       },
+      // --- Attachment Tools Start ---
+      {
+        name: "list_work_item_attachments",
+        description: "獲取指定 Azure DevOps Work Item 的附件列表，包含下載 URL。",
+        inputSchema: {
+          type: "object",
+          properties: {
+            workItemId: { type: "number", description: "要獲取附件列表的 Work Item ID" },
+            projectName: { type: "string", description: "專案名稱 (可選，預設為伺服器偵測到的第一個專案)" },
+          },
+          required: ["workItemId"],
+        },
+      },
+      {
+        name: "upload_work_item_attachment",
+        description: "上傳新附件到指定的 Azure DevOps Work Item。注意: 檔案內容需以 Base64 編碼字串傳入。",
+        inputSchema: {
+          type: "object",
+          properties: {
+            workItemId: { type: "number", description: "要附加檔案的 Work Item ID" },
+            fileName: { type: "string", description: "上傳的檔案名稱" },
+            fileContentBase64: { type: "string", description: "檔案內容的 Base64 編碼字串" },
+            projectName: { type: "string", description: "專案名稱 (可選，預設為伺服器偵測到的第一個專案)" },
+            comment: { type: "string", description: "附加檔案時的說明註解 (可選，預設為 'Attached via MCP')" },
+            chunkSize: { type: "number", description: "分塊上傳時的塊大小（位元組），預設 4MB", default: 4 * 1024 * 1024 },
+            chunkThreshold: { type: "number", description: "觸發分塊上傳的檔案大小閾值（位元組），預設 100MB", default: 100 * 1024 * 1024 },
+          },
+          required: ["workItemId", "fileName", "fileContentBase64"],
+        },
+      },
+      {
+        name: "delete_work_item_attachment",
+        description: "從 Azure DevOps Work Item 中刪除指定的附件。",
+        inputSchema: {
+          type: "object",
+          properties: {
+            attachmentId: { type: "string", description: "要刪除的附件 GUID ID" },
+            projectName: { type: "string", description: "專案名稱 (可選，預設為伺服器偵測到的第一個專案)" }, // Project might be needed for context, though API uses ID directly
+          },
+          required: ["attachmentId"],
+        },
+      },
+      // --- Attachment Tools End ---
     ],
   };
 });
@@ -480,6 +523,222 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
+        // --- Attachment Tool Implementations Start ---
+
+        // Interface for basic attachment info extracted from relations
+        interface AttachmentInfo {
+          id: string;
+          name: string;
+          url: string; // API URL
+        }
+
+      case "list_work_item_attachments": {
+        const workItemId = args.workItemId as number;
+        const targetProjectName = args.projectName as string | undefined ?? currentProjectName; // Use provided or default
+
+        if (typeof workItemId !== 'number') {
+          throw new McpError(ErrorCode.InvalidParams, "缺少或無效的參數: workItemId (必須是數字)");
+        }
+
+        // https://learn.microsoft.com/en-us/rest/api/azure/devops/wit/work-items/get-work-item?view=azure-devops-rest-7.1&tabs=HTTP
+        // We need to expand relations to find attachments
+        const url = `/${encodeURIComponent(targetProjectName)}/_apis/wit/workitems/${workItemId}?$expand=relations&api-version=${API_VERSION}`;
+        const response = await instance.get(url);
+        const workItemData = response.data;
+
+        const attachments = (workItemData.relations ?? [])
+          .filter((rel: any) => rel.rel === 'AttachedFile')
+          .map((rel: any) => {
+            // Extract ID from URL: e.g., https://dev.azure.com/org/proj/_apis/wit/attachments/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+            const urlParts = rel.url.split('/');
+            const id = urlParts[urlParts.length - 1]; // Get the last part as ID
+            return {
+              id: id,
+              name: rel.attributes?.name ?? 'Unknown Filename',
+              url: rel.url, // This is the API URL, not direct download initially
+            };
+          }) as AttachmentInfo[]; // Assert the type here
+
+        if (attachments.length === 0) {
+          return { content: [{ type: "text", text: `Work Item ${workItemId} 沒有找到任何附件。` }] };
+        }
+
+        // Enhance with direct download URLs (requires another call per attachment or constructing the URL)
+        // Let's construct the download URL directly for simplicity
+        const attachmentsWithDownloadUrl = attachments.map((att: AttachmentInfo) => ({ // Add type annotation for att
+          ...att,
+          // Construct the download URL based on the API URL structure
+          downloadUrl: `${ORG_URL}/${encodeURIComponent(targetProjectName)}/_apis/wit/attachments/${att.id}?fileName=${encodeURIComponent(att.name)}&download=true&api-version=${API_VERSION}`
+        }));
+
+
+        return {
+          content: [{ type: "text", text: JSON.stringify(attachmentsWithDownloadUrl, null, 2) }],
+        };
+      }
+
+      case "upload_work_item_attachment": {
+        const workItemId = args.workItemId as number;
+        const fileName = args.fileName as string;
+        const fileContentBase64 = args.fileContentBase64 as string;
+        const targetProjectName = args.projectName as string | undefined ?? currentProjectName;
+        const comment = args.comment as string | undefined ?? `Attached ${fileName} via MCP`;
+        // Get chunk options with defaults from schema
+        const chunkSize = args.chunkSize as number ?? (4 * 1024 * 1024);
+        const chunkThreshold = args.chunkThreshold as number ?? (100 * 1024 * 1024);
+
+
+        if (typeof workItemId !== 'number' || !fileName || !fileContentBase64) {
+          throw new McpError(ErrorCode.InvalidParams, "缺少必要的參數: workItemId (數字), fileName (字串), fileContentBase64 (字串)");
+        }
+
+        let fileBuffer: Buffer;
+        try {
+          fileBuffer = Buffer.from(fileContentBase64, 'base64');
+        } catch (e) {
+          throw new McpError(ErrorCode.InvalidParams, "無效的參數: fileContentBase64 無法被解析為 Base64");
+        }
+
+        const fileSize = fileBuffer.length;
+        let attachmentId: string;
+        let attachmentUrl: string;
+
+        console.error(`檔案大小: ${fileSize} bytes, 分塊閾值: ${chunkThreshold} bytes`);
+
+        // --- Upload Logic (Standard or Chunked) ---
+        if (fileSize <= chunkThreshold) {
+          // --- Standard Upload ---
+          console.error("執行標準上傳...");
+          const uploadUrl = `/${encodeURIComponent(targetProjectName)}/_apis/wit/attachments?fileName=${encodeURIComponent(fileName)}&api-version=${API_VERSION}`;
+          const uploadResponse = await instance.post(uploadUrl, fileBuffer, {
+            headers: {
+              'Content-Type': 'application/octet-stream',
+            },
+            // Prevent axios from modifying buffer or headers incorrectly
+            maxBodyLength: Infinity, // Allow large request bodies
+            maxContentLength: Infinity,
+            transformRequest: [(data, headers) => {
+              // Axios might try to set Content-Type based on data type, override it
+              if (headers) {
+                headers['Content-Type'] = 'application/octet-stream';
+                // Axios might automatically add content-length, which is fine here
+              }
+              return data;
+            }],
+          });
+          attachmentUrl = uploadResponse.data.url;
+          attachmentId = uploadResponse.data.id;
+          console.error(`標準上傳成功: ID=${attachmentId}, URL=${attachmentUrl}`);
+
+        } else {
+          // --- Chunked Upload ---
+          console.error(`執行分塊上傳 (塊大小: ${chunkSize} bytes)...`);
+          // 1. Initialize Chunked Upload
+          const initUrl = `/${encodeURIComponent(targetProjectName)}/_apis/wit/attachments?fileName=${encodeURIComponent(fileName)}&uploadType=chunked&api-version=${API_VERSION}`;
+          console.error(`初始化分塊上傳: POST ${initUrl}`);
+          const initResponse = await instance.post(initUrl, null, { // Empty body for initialization
+            headers: { 'Content-Length': '0' } // Explicitly set Content-Length to 0
+          });
+          attachmentId = initResponse.data.id;
+          console.error(`分塊上傳初始化成功: Attachment ID = ${attachmentId}`);
+
+          // 2. Upload Chunks
+          const chunkUploadUrl = `/${encodeURIComponent(targetProjectName)}/_apis/wit/attachments/${attachmentId}?api-version=${API_VERSION}`;
+          for (let start = 0; start < fileSize; start += chunkSize) {
+            const end = Math.min(start + chunkSize, fileSize) - 1;
+            const chunk = fileBuffer.slice(start, end + 1);
+            const currentChunkSize = chunk.length;
+            const contentRange = `bytes ${start}-${end}/${fileSize}`;
+
+            console.error(`上傳分塊: PATCH ${chunkUploadUrl}, Range: ${contentRange}, Size: ${currentChunkSize}`);
+
+            await instance.patch(chunkUploadUrl, chunk, {
+              headers: {
+                'Content-Type': 'application/octet-stream',
+                'Content-Length': currentChunkSize.toString(),
+                'Content-Range': contentRange,
+              },
+              maxBodyLength: Infinity,
+              maxContentLength: Infinity,
+              transformRequest: [(data, headers) => {
+                if (headers) {
+                  headers['Content-Type'] = 'application/octet-stream';
+                  // Content-Length and Content-Range are set above
+                }
+                return data;
+              }],
+            });
+            console.error(`分塊 ${start}-${end} 上傳成功`);
+          }
+          // Construct the final URL after successful chunking
+          attachmentUrl = `${ORG_URL}/${encodeURIComponent(targetProjectName)}/_apis/wit/attachments/${attachmentId}?fileName=${encodeURIComponent(fileName)}`;
+          console.error(`所有分塊上傳完成. Final URL: ${attachmentUrl}`);
+        }
+
+        // --- Link Attachment to Work Item ---
+        console.error(`連結附件 ${attachmentId} 到 Work Item ${workItemId}...`);
+        const patchDocument = [
+          {
+            op: "add",
+            path: "/relations/-",
+            value: {
+              rel: "AttachedFile", // Use AttachedFile relation type
+              url: attachmentUrl,
+              attributes: {
+                comment: comment
+              }
+            }
+          }
+        ];
+
+        const linkUrl = `/_apis/wit/workitems/${workItemId}?api-version=${API_VERSION}`; // Use stable API for linking if possible, check docs if preview needed
+        const linkPatchDocument = [
+          {
+            op: "add",
+            path: "/relations/-",
+            value: {
+              rel: "AttachedFile",
+              url: attachmentUrl, // Use the URL returned by the upload API
+              attributes: {
+                comment: comment
+              }
+            }
+          }
+        ];
+        await instance.patch(linkUrl, linkPatchDocument, {
+          headers: { 'Content-Type': 'application/json-patch+json' }
+        });
+        console.error(`附件成功連結到 Work Item ${workItemId}`);
+
+        // Return the attachment info
+        return {
+          content: [{ type: "text", text: JSON.stringify({ id: attachmentId, url: attachmentUrl }, null, 2) }],
+        };
+      }
+
+      case "delete_work_item_attachment": {
+        const attachmentId = args.attachmentId as string;
+        // Project name is not strictly needed for the delete API call itself, but good for context logging if needed.
+        // const targetProjectName = args.projectName as string | undefined ?? currentProjectName;
+
+        if (!attachmentId || typeof attachmentId !== 'string') {
+          throw new McpError(ErrorCode.InvalidParams, "缺少或無效的參數: attachmentId (必須是 GUID 字串)");
+        }
+
+        // https://learn.microsoft.com/en-us/rest/api/azure/devops/wit/attachments/delete?view=azure-devops-rest-7.1
+        // Note: The API uses the attachment ID directly, project context isn't in the URL path for delete.
+        const deleteUrl = `/_apis/wit/attachments/${attachmentId}?api-version=${API_VERSION}`;
+        await instance.delete(deleteUrl);
+
+        // Note: Deleting the attachment reference automatically removes the link from the work item.
+        // No separate PATCH call is needed on the work item.
+
+        return {
+          content: [{ type: "text", text: `成功刪除附件 ID: ${attachmentId}` }],
+        };
+      }
+
+      // --- Attachment Tool Implementations End ---
 
       default:
         throw new McpError(ErrorCode.MethodNotFound, `未知的工具: ${request.params.name}`);
