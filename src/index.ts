@@ -38,6 +38,9 @@ async function getAxiosInstance(): Promise<AxiosInstance> {
         'Authorization': getBasicAuthHeader(PAT),
         'Content-Type': 'application/json', // Default content type
       },
+      // Set higher limits for request body size, important for uploads
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
     });
     // Add interceptor for logging requests/responses (optional, good for debugging)
     axiosInstance.interceptors.request.use(request => {
@@ -86,7 +89,7 @@ async function getProjectName(): Promise<string> {
 const server = new Server(
   {
     name: "azure-devops-mcp-server",
-    version: "0.1.0",
+    version: "0.1.1", // Increment version due to new features
     description: "透過自然語言更方便地與 Azure DevOps 互動 (MVP - using axios)",
   },
   {
@@ -96,9 +99,8 @@ const server = new Server(
   }
 );
 
-// --- Tool Definitions (Remain the same) ---
+// --- Tool Definitions ---
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-  // Definitions are unchanged from the previous version
   return {
     tools: [
       {
@@ -160,13 +162,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             workItemType: { type: "string", description: "要篩選的工作項目類型，例如 'User Story', 'Bug' (可選)" },
             fields: { type: "array", items: { type: "string" }, description: "要取得的欄位列表 (可選，使用欄位參考名稱)。若未提供，則回傳預設欄位 (ID, Title, State, Type, AssignedTo)。" },
           },
-          // No longer required 'query' if filtering by project/type
         },
       },
       {
         name: "list_projects",
         description: "列出 Azure DevOps 組織中的所有專案。",
-        inputSchema: { // No input parameters needed
+        inputSchema: {
           type: "object",
           properties: {},
         },
@@ -240,6 +241,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       // --- Attachment Tools End ---
+      { // Added add_issue_comment definition from remote
+        name: "add_issue_comment",
+        description: "為現有的 Azure DevOps Work Item 添加評論。",
+        inputSchema: {
+          type: "object",
+          properties: {
+            workItemId: { type: "number", description: "要添加評論的 Work Item ID" },
+            comment: { type: "string", description: "要添加的評論內容" },
+          },
+          required: ["workItemId", "comment"],
+        },
+      },
     ],
   };
 });
@@ -249,6 +262,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const instance = await getAxiosInstance();
   const currentProjectName = await getProjectName(); // Ensure project name is fetched
   const args = request.params.arguments ?? {};
+
+  // Interface for basic attachment info extracted from relations
+  interface AttachmentInfo {
+    id: string;
+    name: string;
+    url: string; // API URL
+  }
 
   try {
     switch (request.params.name) {
@@ -267,7 +287,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         // JSON Patch document for creating work item
-        // https://learn.microsoft.com/en-us/rest/api/azure/devops/wit/work-items/create?view=azure-devops-rest-7.1&tabs=HTTP#request-body
         const patchDocument = [];
         patchDocument.push({ op: "add", path: "/fields/System.Title", value: title });
         patchDocument.push({ op: "add", path: "/fields/System.AreaPath", value: areaPath });
@@ -297,13 +316,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         // Construct URL based on whether specific fields are requested
-        // https://learn.microsoft.com/en-us/rest/api/azure/devops/wit/work-items/get-work-item?view=azure-devops-rest-7.1&tabs=HTTP
         let url = `/_apis/wit/workitems/${id}?api-version=${API_VERSION}`;
         if (requestedFields && Array.isArray(requestedFields) && requestedFields.length > 0) {
-          // Use the 'fields' parameter if provided
           url += `&fields=${requestedFields.map(encodeURIComponent).join(',')}`;
         } else {
-          // Default to $expand=all if no specific fields are requested
           url += '&$expand=all';
         }
 
@@ -311,7 +327,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const workItemData = response.data;
 
         if (summarize) {
-          // Extract key fields for summary
           const fields = workItemData.fields ?? {};
           const summaryText = `Work Item ${workItemData.id} 摘要:\n` +
             `- 標題 (Title): ${fields['System.Title'] ?? 'N/A'}\n` +
@@ -324,7 +339,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             content: [{ type: "text", text: summaryText }],
           };
         } else {
-          // Return full JSON if not summarizing
           return {
             content: [{ type: "text", text: JSON.stringify(workItemData, null, 2) }],
           };
@@ -340,10 +354,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           throw new McpError(ErrorCode.InvalidParams, "缺少或無效的參數: id (數字) 和 updates (非空物件)");
         }
 
-        // JSON Patch document for updating work item
-        // https://learn.microsoft.com/en-us/rest/api/azure/devops/wit/work-items/update?view=azure-devops-rest-7.1&tabs=HTTP#request-body
         const patchDocument = Object.entries(updates).map(([key, value]) => ({
-          op: "replace", // Use "add" if the field might not exist, "replace" otherwise
+          op: "replace",
           path: `/fields/${key}`,
           value: value,
         }));
@@ -354,7 +366,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         const url = `/_apis/wit/workitems/${id}?api-version=${API_VERSION}-preview.3`;
         await instance.patch(url, patchDocument, {
-          headers: { 'Content-Type': 'application/json-patch+json' } // Required header
+          headers: { 'Content-Type': 'application/json-patch+json' }
         });
 
         return {
@@ -364,12 +376,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case "search_work_items": {
         const queryText = args.query as string | undefined;
-        const targetProjectName = args.projectName as string | undefined ?? currentProjectName; // Use provided or default
+        const targetProjectName = args.projectName as string | undefined ?? currentProjectName;
         const workItemType = args.workItemType as string | undefined;
         const requestedFields = args.fields as string[] | undefined;
 
-        // Build WHERE clauses
-        const conditions: string[] = [`[System.TeamProject] = '${targetProjectName.replace(/'/g, "''")}'`]; // Always filter by project
+        const conditions: string[] = [`[System.TeamProject] = '${targetProjectName.replace(/'/g, "''")}'`];
 
         if (workItemType) {
           conditions.push(`[System.WorkItemType] = '${workItemType.replace(/'/g, "''")}'`);
@@ -380,11 +391,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           const escapedQueryText = queryText.replace(/'/g, "''");
           conditions.push(`([System.Title] CONTAINS '${escapedQueryText}' ${isNumericId ? `OR [System.Id] = ${queryText}` : ''})`);
         } else if (!workItemType) {
-          // If no query and no type, maybe just list all in project? Or throw error?
-          // Let's list all for now, might need refinement.
           console.error("搜尋條件不足 (未提供 query 或 workItemType)，將列出專案所有項目 (可能很多)。");
         }
-
 
         const wiql = `
           SELECT [System.Id], [System.Title], [System.State], [System.WorkItemType]
@@ -393,8 +401,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           ORDER BY [System.ChangedDate] DESC
         `;
 
-        // 1. Execute WIQL query
-        // https://learn.microsoft.com/en-us/rest/api/azure/devops/wit/wiql/query-by-wiql?view=azure-devops-rest-7.1&tabs=HTTP
         const wiqlUrl = `/${encodeURIComponent(currentProjectName)}/_apis/wit/wiql?api-version=${API_VERSION}-preview.2`;
         const wiqlResponse = await instance.post(wiqlUrl, { query: wiql });
 
@@ -403,14 +409,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [{ type: "text", text: "找不到符合條件的 Work Items。" }] };
         }
 
-        // 2. Fetch details for found items (batch)
-        // https://learn.microsoft.com/en-us/rest/api/azure/devops/wit/work-items/get-work-items-batch?view=azure-devops-rest-7.1&tabs=HTTP
-        const ids = workItemRefs.slice(0, 50).map((item: { id: number }) => item.id); // Limit batch size
+        const ids = workItemRefs.slice(0, 50).map((item: { id: number }) => item.id);
         if (ids.length === 0) {
           return { content: [{ type: "text", text: "找不到符合條件的 Work Items (ID 提取失敗)。" }] };
         }
 
-        // Determine fields for batch request
         const defaultFields = ["System.Id", "System.Title", "System.State", "System.WorkItemType", "System.AssignedTo"];
         const fieldsToFetch = (requestedFields && Array.isArray(requestedFields) && requestedFields.length > 0)
           ? requestedFields
@@ -419,27 +422,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const batchUrl = `/_apis/wit/workitemsbatch?api-version=${API_VERSION}-preview.1`;
         const batchResponse = await instance.post(batchUrl, {
           ids: ids,
-          fields: fieldsToFetch, // Use determined fields
-          // $expand is not needed when specifying fields
+          fields: fieldsToFetch,
         });
 
-        // Prepare summarized response if fields were not explicitly requested
         let responseData = batchResponse.data.value;
         let responseType: "json" | "text" = "json";
         let responseText = "";
 
         if (!requestedFields || requestedFields.length === 0) {
-          // Summarize if default fields were used
           responseType = "text";
           responseText = "搜尋結果 (摘要):\n" + responseData.map((item: any) =>
             `- ID: ${item.id}, Type: ${item.fields?.['System.WorkItemType']}, State: ${item.fields?.['System.State']}, Title: ${item.fields?.['System.Title']}`
           ).join('\n');
-          // Add a note about how to get full details
           responseText += "\n\n提示：若需完整 JSON，請在下次搜尋時使用 `fields` 參數指定欄位，或使用 `get_work_item_details` 取得單一項目詳情。";
         }
 
-
-        // Always return text, either summarized or full JSON stringified
         const finalText = responseType === "text" ? responseText : JSON.stringify(responseData, null, 2);
         return {
           content: [{ type: "text", text: finalText }],
@@ -447,16 +444,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "list_projects": {
-        // https://learn.microsoft.com/en-us/rest/api/azure/devops/core/projects/list?view=azure-devops-rest-7.1
         const url = `/_apis/projects?api-version=${API_VERSION}`;
         const response = await instance.get(url);
-        const projects = response.data.value as { id: string, name: string, description?: string }[]; // Array of project objects
+        const projects = response.data.value as { id: string, name: string, description?: string }[];
 
         if (!projects || projects.length === 0) {
           return { content: [{ type: "text", text: "找不到任何專案。" }] };
         }
 
-        // Create a summarized text response
         const summaryText = `找到 ${projects.length} 個專案:\n` + projects.map(p =>
           `- ${p.name} (ID: ${p.id})${p.description ? ` - ${p.description}` : ''}`
         ).join('\n');
@@ -471,7 +466,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!projectIdOrName) {
           throw new McpError(ErrorCode.InvalidParams, "缺少必要的參數: projectIdOrName");
         }
-        // https://learn.microsoft.com/en-us/rest/api/azure/devops/core/projects/get?view=azure-devops-rest-7.1
         const url = `/_apis/projects/${encodeURIComponent(projectIdOrName)}?api-version=${API_VERSION}`;
         const response = await instance.get(url);
         return {
@@ -493,20 +487,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           throw new McpError(ErrorCode.InvalidParams, "無效的參數: commitSha 必須是 40 個字元的 SHA");
         }
 
-        // Construct the commit URL (assuming default Azure DevOps URL structure)
-        const commitUrl = `${ORG_URL}/${encodeURIComponent(targetProjectName)}/_git/${encodeURIComponent(repositoryName)}/commit/${commitSha}`;
+        const baseUrl = ORG_URL.replace(/\/$/, '');
+        const commitUrl = `${baseUrl}/${encodeURIComponent(targetProjectName)}/_git/${encodeURIComponent(repositoryName)}/commit/${commitSha}`;
 
-        // JSON Patch document to add the artifact link relation
-        // https://learn.microsoft.com/en-us/rest/api/azure/devops/wit/work-items/update?view=azure-devops-rest-7.1#add-a-link
         const patchDocument = [
           {
             op: "add",
-            path: "/relations/-", // Add to the end of the relations array
+            path: "/relations/-",
             value: {
-              rel: "ArtifactLink", // Relation type for external links like commits
+              rel: "ArtifactLink",
               url: commitUrl,
               attributes: {
-                name: "Fixed in Commit", // Standard link type name for commits
+                name: "Fixed in Commit",
                 comment: linkComment
               }
             }
@@ -523,25 +515,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
-        // --- Attachment Tool Implementations Start ---
-
-        // Interface for basic attachment info extracted from relations
-        interface AttachmentInfo {
-          id: string;
-          name: string;
-          url: string; // API URL
-        }
+      // --- Attachment Tool Implementations Start ---
 
       case "list_work_item_attachments": {
         const workItemId = args.workItemId as number;
-        const targetProjectName = args.projectName as string | undefined ?? currentProjectName; // Use provided or default
+        const targetProjectName = args.projectName as string | undefined ?? currentProjectName;
 
         if (typeof workItemId !== 'number') {
           throw new McpError(ErrorCode.InvalidParams, "缺少或無效的參數: workItemId (必須是數字)");
         }
 
-        // https://learn.microsoft.com/en-us/rest/api/azure/devops/wit/work-items/get-work-item?view=azure-devops-rest-7.1&tabs=HTTP
-        // We need to expand relations to find attachments
         const url = `/${encodeURIComponent(targetProjectName)}/_apis/wit/workitems/${workItemId}?$expand=relations&api-version=${API_VERSION}`;
         const response = await instance.get(url);
         const workItemData = response.data;
@@ -549,28 +532,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const attachments = (workItemData.relations ?? [])
           .filter((rel: any) => rel.rel === 'AttachedFile')
           .map((rel: any) => {
-            // Extract ID from URL: e.g., https://dev.azure.com/org/proj/_apis/wit/attachments/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
             const urlParts = rel.url.split('/');
-            const id = urlParts[urlParts.length - 1]; // Get the last part as ID
+            const id = urlParts[urlParts.length - 1];
             return {
               id: id,
               name: rel.attributes?.name ?? 'Unknown Filename',
-              url: rel.url, // This is the API URL, not direct download initially
+              url: rel.url,
             };
-          }) as AttachmentInfo[]; // Assert the type here
+          }) as AttachmentInfo[];
 
         if (attachments.length === 0) {
           return { content: [{ type: "text", text: `Work Item ${workItemId} 沒有找到任何附件。` }] };
         }
 
-        // Enhance with direct download URLs (requires another call per attachment or constructing the URL)
-        // Let's construct the download URL directly for simplicity
-        const attachmentsWithDownloadUrl = attachments.map((att: AttachmentInfo) => ({ // Add type annotation for att
+        const attachmentsWithDownloadUrl = attachments.map((att: AttachmentInfo) => ({
           ...att,
-          // Construct the download URL based on the API URL structure
           downloadUrl: `${ORG_URL}/${encodeURIComponent(targetProjectName)}/_apis/wit/attachments/${att.id}?fileName=${encodeURIComponent(att.name)}&download=true&api-version=${API_VERSION}`
         }));
-
 
         return {
           content: [{ type: "text", text: JSON.stringify(attachmentsWithDownloadUrl, null, 2) }],
@@ -583,10 +561,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const fileContentBase64 = args.fileContentBase64 as string;
         const targetProjectName = args.projectName as string | undefined ?? currentProjectName;
         const comment = args.comment as string | undefined ?? `Attached ${fileName} via MCP`;
-        // Get chunk options with defaults from schema
         const chunkSize = args.chunkSize as number ?? (4 * 1024 * 1024);
         const chunkThreshold = args.chunkThreshold as number ?? (100 * 1024 * 1024);
-
 
         if (typeof workItemId !== 'number' || !fileName || !fileContentBase64) {
           throw new McpError(ErrorCode.InvalidParams, "缺少必要的參數: workItemId (數字), fileName (字串), fileContentBase64 (字串)");
@@ -605,23 +581,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         console.error(`檔案大小: ${fileSize} bytes, 分塊閾值: ${chunkThreshold} bytes`);
 
-        // --- Upload Logic (Standard or Chunked) ---
         if (fileSize <= chunkThreshold) {
-          // --- Standard Upload ---
           console.error("執行標準上傳...");
           const uploadUrl = `/${encodeURIComponent(targetProjectName)}/_apis/wit/attachments?fileName=${encodeURIComponent(fileName)}&api-version=${API_VERSION}`;
           const uploadResponse = await instance.post(uploadUrl, fileBuffer, {
             headers: {
               'Content-Type': 'application/octet-stream',
             },
-            // Prevent axios from modifying buffer or headers incorrectly
-            maxBodyLength: Infinity, // Allow large request bodies
+            maxBodyLength: Infinity,
             maxContentLength: Infinity,
             transformRequest: [(data, headers) => {
-              // Axios might try to set Content-Type based on data type, override it
               if (headers) {
                 headers['Content-Type'] = 'application/octet-stream';
-                // Axios might automatically add content-length, which is fine here
               }
               return data;
             }],
@@ -631,18 +602,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           console.error(`標準上傳成功: ID=${attachmentId}, URL=${attachmentUrl}`);
 
         } else {
-          // --- Chunked Upload ---
           console.error(`執行分塊上傳 (塊大小: ${chunkSize} bytes)...`);
-          // 1. Initialize Chunked Upload
           const initUrl = `/${encodeURIComponent(targetProjectName)}/_apis/wit/attachments?fileName=${encodeURIComponent(fileName)}&uploadType=chunked&api-version=${API_VERSION}`;
           console.error(`初始化分塊上傳: POST ${initUrl}`);
-          const initResponse = await instance.post(initUrl, null, { // Empty body for initialization
-            headers: { 'Content-Length': '0' } // Explicitly set Content-Length to 0
+          const initResponse = await instance.post(initUrl, null, {
+            headers: { 'Content-Length': '0' }
           });
           attachmentId = initResponse.data.id;
           console.error(`分塊上傳初始化成功: Attachment ID = ${attachmentId}`);
 
-          // 2. Upload Chunks
           const chunkUploadUrl = `/${encodeURIComponent(targetProjectName)}/_apis/wit/attachments/${attachmentId}?api-version=${API_VERSION}`;
           for (let start = 0; start < fileSize; start += chunkSize) {
             const end = Math.min(start + chunkSize, fileSize) - 1;
@@ -663,42 +631,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               transformRequest: [(data, headers) => {
                 if (headers) {
                   headers['Content-Type'] = 'application/octet-stream';
-                  // Content-Length and Content-Range are set above
                 }
                 return data;
               }],
             });
             console.error(`分塊 ${start}-${end} 上傳成功`);
           }
-          // Construct the final URL after successful chunking
           attachmentUrl = `${ORG_URL}/${encodeURIComponent(targetProjectName)}/_apis/wit/attachments/${attachmentId}?fileName=${encodeURIComponent(fileName)}`;
           console.error(`所有分塊上傳完成. Final URL: ${attachmentUrl}`);
         }
 
-        // --- Link Attachment to Work Item ---
         console.error(`連結附件 ${attachmentId} 到 Work Item ${workItemId}...`);
-        const patchDocument = [
-          {
-            op: "add",
-            path: "/relations/-",
-            value: {
-              rel: "AttachedFile", // Use AttachedFile relation type
-              url: attachmentUrl,
-              attributes: {
-                comment: comment
-              }
-            }
-          }
-        ];
-
-        const linkUrl = `/_apis/wit/workitems/${workItemId}?api-version=${API_VERSION}`; // Use stable API for linking if possible, check docs if preview needed
+        const linkUrl = `/_apis/wit/workitems/${workItemId}?api-version=${API_VERSION}`;
         const linkPatchDocument = [
           {
             op: "add",
             path: "/relations/-",
             value: {
               rel: "AttachedFile",
-              url: attachmentUrl, // Use the URL returned by the upload API
+              url: attachmentUrl,
               attributes: {
                 comment: comment
               }
@@ -710,7 +661,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         });
         console.error(`附件成功連結到 Work Item ${workItemId}`);
 
-        // Return the attachment info
         return {
           content: [{ type: "text", text: JSON.stringify({ id: attachmentId, url: attachmentUrl }, null, 2) }],
         };
@@ -718,20 +668,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case "delete_work_item_attachment": {
         const attachmentId = args.attachmentId as string;
-        // Project name is not strictly needed for the delete API call itself, but good for context logging if needed.
-        // const targetProjectName = args.projectName as string | undefined ?? currentProjectName;
 
         if (!attachmentId || typeof attachmentId !== 'string') {
           throw new McpError(ErrorCode.InvalidParams, "缺少或無效的參數: attachmentId (必須是 GUID 字串)");
         }
 
-        // https://learn.microsoft.com/en-us/rest/api/azure/devops/wit/attachments/delete?view=azure-devops-rest-7.1
-        // Note: The API uses the attachment ID directly, project context isn't in the URL path for delete.
         const deleteUrl = `/_apis/wit/attachments/${attachmentId}?api-version=${API_VERSION}`;
         await instance.delete(deleteUrl);
-
-        // Note: Deleting the attachment reference automatically removes the link from the work item.
-        // No separate PATCH call is needed on the work item.
 
         return {
           content: [{ type: "text", text: `成功刪除附件 ID: ${attachmentId}` }],
@@ -739,6 +682,31 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       // --- Attachment Tool Implementations End ---
+      case "add_issue_comment": { // Added add_issue_comment implementation from remote
+        const workItemId = args.workItemId as number;
+        const comment = args.comment as string;
+
+        if (typeof workItemId !== 'number' || !comment) {
+          throw new McpError(ErrorCode.InvalidParams, "缺少必要的參數: workItemId (數字) 和 comment (字串)");
+        }
+
+        const patchDocument = [
+          {
+            op: "add",
+            path: "/fields/System.History",
+            value: comment,
+          }
+        ];
+
+        const url = `/_apis/wit/workitems/${workItemId}?api-version=${API_VERSION}-preview.3`;
+        await instance.patch(url, patchDocument, {
+          headers: { 'Content-Type': 'application/json-patch+json' }
+        });
+
+        return {
+          content: [{ type: "text", text: `成功為 Work Item ${workItemId} 添加評論。` }],
+        };
+      }
 
       default:
         throw new McpError(ErrorCode.MethodNotFound, `未知的工具: ${request.params.name}`);
