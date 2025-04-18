@@ -15,7 +15,7 @@ import { Buffer } from 'buffer'; // Needed for Basic Auth encoding
 // --- Configuration ---
 const ORG_URL = process.env.AZURE_DEVOPS_ORG_URL as string; // e.g., https://dev.azure.com/YourOrgName
 const PAT = process.env.AZURE_DEVOPS_PAT as string;
-const API_VERSION = "7.2"; // Use a consistent API version
+const API_VERSION = "7.2-preview"; // Use a consistent API version
 
 if (!ORG_URL || !PAT) {
   console.error("Missing required environment variables: AZURE_DEVOPS_ORG_URL and/or AZURE_DEVOPS_PAT. Please set them in the MCP settings.");
