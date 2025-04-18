@@ -19,8 +19,23 @@ This server provides the following tools to manage Azure DevOps resources:
 - **`update_work_item`**: 更新現有 Azure DevOps Work Item 的欄位 (例如狀態、指派對象)。
   - 必要參數：`id` (Work Item ID), `updates` (包含要更新欄位和值的物件)。
   - 可選參數：`comment` (更新評論)。
-- **`search_work_items`**: 搜尋 Azure DevOps Work Items。可依專案、類型、標題或 ID 進行篩選。
-  - 可選參數：`query` (搜尋關鍵字), `projectName` (專案名稱), `workItemType` (工作項目類型)。
+- **`search_work_items`**: 搜尋 Azure DevOps Work Items。提供多樣化的篩選條件和排序選項。
+  - 可選參數：
+    - `query`: 搜尋關鍵字（搜尋標題、描述或 ID）
+    - `projectName`: 專案名稱（預設為伺服器偵測到的第一個專案）
+    - `workItemType`: 工作項目類型（例如 'User Story', 'Bug'）
+    - `state`: 狀態篩選（例如 'Active', 'Closed'）
+    - `assignedTo`: 指派對象的顯示名稱或 Email
+    - `tags`: 標籤篩選（以分號分隔，支援多個標籤的 OR 條件）
+    - `createdAfter`: 建立時間篩選（ISO 8601 格式，例如 '2024-03-01'）
+    - `updatedAfter`: 更新時間篩選（ISO 8601 格式，例如 '2024-03-01'）
+    - `fields`: 自訂回傳欄位列表（預設包含 ID、標題、狀態、類型、指派對象、標籤、建立/更新時間和人員）
+    - `orderBy`: 排序方式（支援 'ChangedDate'、'CreatedDate'、'State'、'ID'，可加上 'ASC' 或 'DESC'）
+    - `top`: 回傳數量限制（預設 50，最大 200）
+  - 回傳格式：
+    - 總筆數和是否有更多結果
+    - 每個項目的詳細資訊，包含 URL 連結
+    - 格式化的摘要顯示
 - **`list_projects`**: 列出 Azure DevOps 組織中的所有專案。
 - **`get_project_details`**: 根據專案 ID 或名稱取得 Azure DevOps 專案的詳細資訊。
   - 必要參數：`projectIdOrName` (專案 ID 或名稱)。

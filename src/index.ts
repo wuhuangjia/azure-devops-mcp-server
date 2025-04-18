@@ -153,14 +153,21 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "search_work_items",
-        description: "搜尋 Azure DevOps Work Items。可依專案、類型、標題或 ID 進行篩選。",
+        description: "搜尋 Azure DevOps Work Items。可依專案、類型、標題、ID、狀態等條件進行篩選。",
         inputSchema: {
           type: "object",
           properties: {
-            query: { type: "string", description: "用於搜尋標題或 ID 的關鍵字 (可選，若僅依專案/類型篩選)" },
+            query: { type: "string", description: "用於搜尋標題或 ID 的關鍵字 (可選，若僅依其他條件篩選)" },
             projectName: { type: "string", description: "要搜尋的專案名稱 (可選，預設為伺服器啟動時偵測到的第一個專案)" },
             workItemType: { type: "string", description: "要篩選的工作項目類型，例如 'User Story', 'Bug' (可選)" },
-            fields: { type: "array", items: { type: "string" }, description: "要取得的欄位列表 (可選，使用欄位參考名稱)。若未提供，則回傳預設欄位 (ID, Title, State, Type, AssignedTo)。" },
+            state: { type: "string", description: "要篩選的狀態，例如 'Active', 'Closed' (可選)" },
+            assignedTo: { type: "string", description: "指派對象的顯示名稱或 Email (可選)" },
+            tags: { type: "string", description: "要篩選的標籤，以分號分隔 (可選)" },
+            createdAfter: { type: "string", description: "建立時間在此日期之後 (ISO 8601 格式，例如 2024-03-01，可選)" },
+            updatedAfter: { type: "string", description: "更新時間在此日期之後 (ISO 8601 格式，例如 2024-03-01，可選)" },
+            fields: { type: "array", items: { type: "string" }, description: "要取得的欄位列表 (可選，使用欄位參考名稱)。若未提供，則回傳預設欄位 (ID, Title, State, Type, AssignedTo, Tags, CreatedDate, ChangedDate)。" },
+            orderBy: { type: "string", description: "排序欄位 (可選，預設為 'System.ChangedDate DESC'，可用欄位：ChangedDate, CreatedDate, State, ID)" },
+            top: { type: "number", description: "最多回傳的項目數量 (可選，預設 50，最大 200)" },
           },
         },
       },
@@ -239,6 +246,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     id: string;
     name: string;
     url: string; // API URL
+  }
+
+  // Interface for formatted work item response
+  interface WorkItemResponse {
+    id: number;
+    type: string;
+    state: string;
+    title: string;
+    assignedTo?: string;
+    tags: string[];
+    createdDate: string;
+    changedDate: string;
+    createdBy?: string;
+    changedBy?: string;
+    url?: string;
+    [key: string]: any; // For custom fields
+  }
+
+  // Interface for formatted search response
+  interface SearchResponse {
+    totalCount: number;
+    returnedCount: number;
+    hasMoreResults: boolean;
+    items: WorkItemResponse[];
   }
 
   try {
@@ -349,7 +380,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const queryText = args.query as string | undefined;
         const targetProjectName = args.projectName as string | undefined ?? currentProjectName;
         const workItemType = args.workItemType as string | undefined;
+        const state = args.state as string | undefined;
+        const assignedTo = args.assignedTo as string | undefined;
+        const tags = args.tags as string | undefined;
+        const createdAfter = args.createdAfter as string | undefined;
+        const updatedAfter = args.updatedAfter as string | undefined;
         const requestedFields = args.fields as string[] | undefined;
+        const orderBy = args.orderBy as string | undefined;
+        const top = Math.min(args.top as number || 50, 200);
 
         const conditions: string[] = [`[System.TeamProject] = '${targetProjectName.replace(/'/g, "''")}'`];
 
@@ -357,22 +395,76 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           conditions.push(`[System.WorkItemType] = '${workItemType.replace(/'/g, "''")}'`);
         }
 
+        if (state) {
+          conditions.push(`[System.State] = '${state.replace(/'/g, "''")}'`);
+        }
+
+        if (assignedTo) {
+          conditions.push(`[System.AssignedTo] = '${assignedTo.replace(/'/g, "''")}'`);
+        }
+
+        if (tags) {
+          const tagList = tags.split(';').map(t => t.trim()).filter(t => t);
+          if (tagList.length > 0) {
+            const tagConditions = tagList.map(tag => `[System.Tags] CONTAINS '${tag.replace(/'/g, "''")}'`);
+            conditions.push(`(${tagConditions.join(' OR ')})`);
+          }
+        }
+
+        if (createdAfter) {
+          conditions.push(`[System.CreatedDate] >= '${createdAfter}'`);
+        }
+
+        if (updatedAfter) {
+          conditions.push(`[System.ChangedDate] >= '${updatedAfter}'`);
+        }
+
         if (queryText) {
           const isNumericId = /^\d+$/.test(queryText);
           const escapedQueryText = queryText.replace(/'/g, "''");
-          conditions.push(`([System.Title] CONTAINS '${escapedQueryText}' ${isNumericId ? `OR [System.Id] = ${queryText}` : ''})`);
-        } else if (!workItemType) {
-          console.error("搜尋條件不足 (未提供 query 或 workItemType)，將列出專案所有項目 (可能很多)。");
+          conditions.push(`([System.Title] CONTAINS '${escapedQueryText}' ${isNumericId ? `OR [System.Id] = ${queryText}` : ''} OR [System.Description] CONTAINS '${escapedQueryText}')`);
+        }
+
+        const defaultFields = [
+          "System.Id",
+          "System.Title",
+          "System.State",
+          "System.WorkItemType",
+          "System.AssignedTo",
+          "System.Tags",
+          "System.CreatedDate",
+          "System.ChangedDate",
+          "System.CreatedBy",
+          "System.ChangedBy"
+        ];
+
+        const fieldsToSelect = (requestedFields && Array.isArray(requestedFields) && requestedFields.length > 0)
+          ? requestedFields
+          : defaultFields;
+
+        let orderByClause = "[System.ChangedDate] DESC";
+        if (orderBy) {
+          const orderMap: Record<string, string> = {
+            "ChangedDate": "[System.ChangedDate]",
+            "CreatedDate": "[System.CreatedDate]",
+            "State": "[System.State]",
+            "ID": "[System.Id]"
+          };
+          const [field, direction = "DESC"] = orderBy.split(" ");
+          const mappedField = orderMap[field] || "[System.ChangedDate]";
+          orderByClause = `${mappedField} ${direction.toUpperCase()}`;
         }
 
         const wiql = `
-          SELECT [System.Id], [System.Title], [System.State], [System.WorkItemType]
+          SELECT ${fieldsToSelect.join(", ")}
           FROM WorkItems
-          WHERE ${conditions.join(' AND ')}
-          ORDER BY [System.ChangedDate] DESC
+          WHERE ${conditions.join(" AND ")}
+          ORDER BY ${orderByClause}
         `;
 
-        const wiqlUrl = `/${encodeURIComponent(currentProjectName)}/_apis/wit/wiql?api-version=${API_VERSION}-preview.2`;
+        console.error("Executing WIQL query:", wiql);
+
+        const wiqlUrl = `/${encodeURIComponent(targetProjectName)}/_apis/wit/wiql?api-version=${API_VERSION}-preview.2`;
         const wiqlResponse = await instance.post(wiqlUrl, { query: wiql });
 
         const workItemRefs = wiqlResponse.data.workItems;
@@ -380,37 +472,58 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [{ type: "text", text: "找不到符合條件的 Work Items。" }] };
         }
 
-        const ids = workItemRefs.slice(0, 50).map((item: { id: number }) => item.id);
+        const ids = workItemRefs.slice(0, top).map((item: { id: number }) => item.id);
         if (ids.length === 0) {
           return { content: [{ type: "text", text: "找不到符合條件的 Work Items (ID 提取失敗)。" }] };
         }
 
-        const defaultFields = ["System.Id", "System.Title", "System.State", "System.WorkItemType", "System.AssignedTo"];
-        const fieldsToFetch = (requestedFields && Array.isArray(requestedFields) && requestedFields.length > 0)
-          ? requestedFields
-          : defaultFields;
-
         const batchUrl = `/_apis/wit/workitemsbatch?api-version=${API_VERSION}-preview.1`;
         const batchResponse = await instance.post(batchUrl, {
           ids: ids,
-          fields: fieldsToFetch,
+          fields: fieldsToSelect,
         });
 
-        let responseData = batchResponse.data.value;
-        let responseType: "json" | "text" = "json";
-        let responseText = "";
+        const responseData = batchResponse.data.value;
+        const formattedResponse: SearchResponse = {
+          totalCount: workItemRefs.length,
+          returnedCount: responseData.length,
+          hasMoreResults: workItemRefs.length > top,
+          items: responseData.map((item: any) => {
+            const fields = item.fields || {};
+            return {
+              id: item.id,
+              type: fields['System.WorkItemType'],
+              state: fields['System.State'],
+              title: fields['System.Title'],
+              assignedTo: fields['System.AssignedTo']?.displayName,
+              tags: fields['System.Tags']?.split('; ') || [],
+              createdDate: fields['System.CreatedDate'],
+              changedDate: fields['System.ChangedDate'],
+              createdBy: fields['System.CreatedBy']?.displayName,
+              changedBy: fields['System.ChangedBy']?.displayName,
+              url: item._links?.html?.href,
+              ...Object.fromEntries(
+                Object.entries(fields)
+                  .filter(([key]) => !key.startsWith('System.'))
+                  .map(([key, value]) => [key.replace('System.', ''), value])
+              )
+            };
+          })
+        };
 
-        if (!requestedFields || requestedFields.length === 0) {
-          responseType = "text";
-          responseText = "搜尋結果 (摘要):\n" + responseData.map((item: any) =>
-            `- ID: ${item.id}, Type: ${item.fields?.['System.WorkItemType']}, State: ${item.fields?.['System.State']}, Title: ${item.fields?.['System.Title']}`
-          ).join('\n');
-          responseText += "\n\n提示：若需完整 JSON，請在下次搜尋時使用 `fields` 參數指定欄位，或使用 `get_work_item_details` 取得單一項目詳情。";
-        }
+        const summaryText = `找到 ${formattedResponse.totalCount} 個項目${formattedResponse.hasMoreResults ? `（顯示前 ${top} 個）` : ''}：\n\n` +
+          formattedResponse.items.map((item: WorkItemResponse) =>
+            `[${item.id}] ${item.type} (${item.state})\n` +
+            `標題: ${item.title}\n` +
+            `指派給: ${item.assignedTo || '未指派'}\n` +
+            `標籤: ${item.tags.join(', ') || '無'}\n` +
+            `建立: ${new Date(item.createdDate).toLocaleString()} by ${item.createdBy}\n` +
+            `更新: ${new Date(item.changedDate).toLocaleString()} by ${item.changedBy}\n` +
+            `URL: ${item.url}\n`
+          ).join('\n---\n\n');
 
-        const finalText = responseType === "text" ? responseText : JSON.stringify(responseData, null, 2);
         return {
-          content: [{ type: "text", text: finalText }],
+          content: [{ type: "text", text: summaryText }],
         };
       }
 
