@@ -8,13 +8,14 @@ import {
   McpError,
   ErrorCode,
 } from "@modelcontextprotocol/sdk/types.js";
-import axios, { AxiosInstance, AxiosError } from 'axios';
+import axios from 'axios';
+// Axios v1 無型別匯出，直接用 any 取代
 import { Buffer } from 'buffer'; // Needed for Basic Auth encoding
 
 // --- Configuration ---
 const ORG_URL = process.env.AZURE_DEVOPS_ORG_URL as string; // e.g., https://dev.azure.com/YourOrgName
 const PAT = process.env.AZURE_DEVOPS_PAT as string;
-const API_VERSION = "7.1"; // Use a consistent API version
+const API_VERSION = "7.2"; // Use a consistent API version
 
 if (!ORG_URL || !PAT) {
   console.error("Missing required environment variables: AZURE_DEVOPS_ORG_URL and/or AZURE_DEVOPS_PAT. Please set them in the MCP settings.");
@@ -22,7 +23,7 @@ if (!ORG_URL || !PAT) {
 }
 
 // --- Azure DevOps Connection & Project Info ---
-let axiosInstance: AxiosInstance | null = null;
+let axiosInstance: any = null;
 let projectName: string | null = null;
 
 // Function to create Basic Auth header value
@@ -30,30 +31,24 @@ function getBasicAuthHeader(pat: string): string {
   return `Basic ${Buffer.from(`:${pat}`).toString('base64')}`;
 }
 
-async function getAxiosInstance(): Promise<AxiosInstance> {
+async function getAxiosInstance(): Promise<any> {
   if (!axiosInstance) {
     axiosInstance = axios.create({
       baseURL: ORG_URL,
       headers: {
         'Authorization': getBasicAuthHeader(PAT),
         'Content-Type': 'application/json', // Default content type
-      },
-      // Set higher limits for request body size, important for uploads
-      maxBodyLength: Infinity,
-      maxContentLength: Infinity,
+      }
     });
     // Add interceptor for logging requests/responses (optional, good for debugging)
-    axiosInstance.interceptors.request.use(request => {
+    axiosInstance.interceptors.request.use((request: any) => {
       console.error(`--> ${request.method?.toUpperCase()} ${request.url}`);
-      // console.error('Request Headers:', request.headers);
-      // if (request.data) console.error('Request Body:', JSON.stringify(request.data, null, 2));
       return request;
     });
-    axiosInstance.interceptors.response.use(response => {
+    axiosInstance.interceptors.response.use((response: any) => {
       console.error(`<-- ${response.status} ${response.config.method?.toUpperCase()} ${response.config.url}`);
-      // console.error('Response Data:', JSON.stringify(response.data, null, 2));
       return response;
-    }, error => {
+    }, (error: any) => {
       console.error(`<-- ${error.response?.status} ${error.config.method?.toUpperCase()} ${error.config.url}`);
       if (error.response?.data) console.error('Error Response Body:', JSON.stringify(error.response.data, null, 2));
       return Promise.reject(error);
@@ -75,8 +70,8 @@ async function getProjectName(): Promise<string> {
       }
       projectName = projects[0].name;
       console.error(`Using project: ${projectName}`);
-    } catch (error) {
-      const message = error instanceof AxiosError ? error.response?.data?.message || error.message : (error as Error).message;
+    } catch (error: any) {
+      const message = error?.isAxiosError ? error.response?.data?.message || error.message : (error as Error).message;
       console.error("Error fetching projects:", message);
       throw new McpError(ErrorCode.InternalError, `無法取得 Azure DevOps 專案列表: ${message}`);
     }
@@ -297,7 +292,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (assignedTo) patchDocument.push({ op: "add", path: "/fields/System.AssignedTo", value: assignedTo });
         if (tags) patchDocument.push({ op: "add", path: "/fields/System.Tags", value: tags });
 
-        const url = `/${encodeURIComponent(targetProjectName)}/_apis/wit/workitems/$${encodeURIComponent(type)}?api-version=${API_VERSION}-preview.3`; // Use targetProjectName
+        const url = `/${encodeURIComponent(targetProjectName)}/_apis/wit/workitems/$${encodeURIComponent(type)}?api-version=${API_VERSION}`; // Use targetProjectName
         const response = await instance.post(url, patchDocument, {
           headers: { 'Content-Type': 'application/json-patch+json' } // Required header for patch operations
         });
@@ -366,7 +361,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           patchDocument.push({ op: "add", path: "/fields/System.History", value: comment });
         }
 
-        const url = `/_apis/wit/workitems/${id}?api-version=${API_VERSION}-preview.3`;
+        const url = `/_apis/wit/workitems/${id}?api-version=${API_VERSION}`;
         await instance.patch(url, patchDocument, {
           headers: { 'Content-Type': 'application/json-patch+json' }
         });
@@ -464,7 +459,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         console.error("Executing WIQL query:", wiql);
 
-        const wiqlUrl = `/${encodeURIComponent(targetProjectName)}/_apis/wit/wiql?api-version=${API_VERSION}-preview.2`;
+        const wiqlUrl = `/${encodeURIComponent(targetProjectName)}/_apis/wit/wiql?api-version=${API_VERSION}`;
         const wiqlResponse = await instance.post(wiqlUrl, { query: wiql });
 
         const workItemRefs = wiqlResponse.data.workItems;
@@ -477,7 +472,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [{ type: "text", text: "找不到符合條件的 Work Items (ID 提取失敗)。" }] };
         }
 
-        const batchUrl = `/_apis/wit/workitemsbatch?api-version=${API_VERSION}-preview.1`;
+        const batchUrl = `/_apis/wit/workitemsbatch?api-version=${API_VERSION}`;
         const batchResponse = await instance.post(batchUrl, {
           ids: ids,
           fields: fieldsToSelect,
@@ -589,7 +584,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }
         ];
 
-        const url = `/_apis/wit/workitems/${workItemId}?api-version=${API_VERSION}-preview.3`;
+        const url = `/_apis/wit/workitems/${workItemId}?api-version=${API_VERSION}`;
         await instance.patch(url, patchDocument, {
           headers: { 'Content-Type': 'application/json-patch+json' }
         });
@@ -656,7 +651,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }
         ];
 
-        const url = `/_apis/wit/workitems/${workItemId}?api-version=${API_VERSION}-preview.3`;
+        const url = `/_apis/wit/workitems/${workItemId}?api-version=${API_VERSION}`;
         await instance.patch(url, patchDocument, {
           headers: { 'Content-Type': 'application/json-patch+json' }
         });
@@ -671,7 +666,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   } catch (error: any) {
     console.error(`Error calling tool ${request.params.name}:`, error);
-    const message = error instanceof AxiosError ? error.response?.data?.message || error.message : (error as Error).message;
+    const message = error?.isAxiosError ? error.response?.data?.message || error.message : (error as Error).message;
     const errorCode = error instanceof McpError ? error.code : ErrorCode.InternalError;
     throw new McpError(errorCode, `執行工具 ${request.params.name} 時發生錯誤: ${message}`);
   }
