@@ -48,6 +48,10 @@ This server provides the following tools to manage Azure DevOps resources:
   - 可選參數：`projectName` (專案名稱)。
 - **`add_issue_comment`**: 為現有的 Azure DevOps Work Item 添加評論。
   - 必要參數：`workItemId` (Work Item ID), `comment` (評論內容)。
+- **`link_parent_work_item`**: 建立 Work Item 父子關聯（將 childId 設定 parentId 為父項）。
+  - 必要參數：`childId` (子 Work Item ID), `parentId` (父 Work Item ID)
+  - 可選參數：`comment` (連結說明)
+  - 功能說明：將指定的 Work Item 設定為另一個 Work Item 的子項，並可附加說明文字。
 
 ## Development
 

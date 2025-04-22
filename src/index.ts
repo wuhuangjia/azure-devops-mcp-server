@@ -226,6 +226,19 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ["workItemId", "comment"],
         },
       },
+      {
+        name: "link_parent_work_item",
+        description: "建立 Work Item 父子關聯（將 childId 設定 parentId 為父項）",
+        inputSchema: {
+          type: "object",
+          properties: {
+            childId: { type: "number", description: "要設定父項的子 Work Item ID" },
+            parentId: { type: "number", description: "父 Work Item ID" },
+            comment: { type: "string", description: "連結說明（可選）" }
+          },
+          required: ["childId", "parentId"]
+        }
+      },
     ],
   };
 });
@@ -658,6 +671,38 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         return {
           content: [{ type: "text", text: `成功為 Work Item ${workItemId} 添加評論。` }],
+        };
+      }
+
+      case "link_parent_work_item": {
+        const childId = args.childId as number;
+        const parentId = args.parentId as number;
+        const comment = args.comment as string | undefined;
+
+        if (typeof childId !== 'number' || typeof parentId !== 'number') {
+          throw new McpError(ErrorCode.InvalidParams, "缺少或無效的參數: childId 與 parentId 必須為數字");
+        }
+
+        // 依據 Azure DevOps 7.2 API，建立父子關聯
+        const patchDocument = [
+          {
+            op: "add",
+            path: "/relations/-",
+            value: {
+              rel: "System.LinkTypes.Hierarchy-Reverse", // child 指向 parent
+              url: `${ORG_URL}/_apis/wit/workItems/${parentId}`,
+              attributes: comment ? { comment } : undefined
+            }
+          }
+        ];
+
+        const url = `/_apis/wit/workitems/${childId}?api-version=${API_VERSION}`;
+        await instance.patch(url, patchDocument, {
+          headers: { 'Content-Type': 'application/json-patch+json' }
+        });
+
+        return {
+          content: [{ type: "text", text: `成功將 Work Item ${childId} 設定父項為 ${parentId}` }],
         };
       }
 
