@@ -214,7 +214,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       // --- Attachment Tools End (Upload/Delete Removed) ---
-      { // Added add_issue_comment definition from remote
+      {
         name: "add_issue_comment",
         description: "為現有的 Azure DevOps Work Item 添加評論。",
         inputSchema: {
@@ -603,7 +603,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }
         ];
 
-        const url = `/_apis/wit/workitems/${workItemId}?api-version=${API_VERSION}`;
+        // 修正：加上 project 名稱於 URL
+        const url = `/${encodeURIComponent(targetProjectName)}/_apis/wit/workitems/${workItemId}?api-version=${API_VERSION}`;
         await instance.patch(url, patchDocument, {
           headers: { 'Content-Type': 'application/json-patch+json' }
         });
@@ -670,7 +671,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }
         ];
 
-        const url = `/_apis/wit/workitems/${workItemId}?api-version=${API_VERSION}`;
+        // 修正：加上 project 名稱於 URL，避免 owner/project 錯誤
+        const url = `/${encodeURIComponent(currentProjectName)}/_apis/wit/workitems/${workItemId}?api-version=${API_VERSION}`;
         await instance.patch(url, patchDocument, {
           headers: { 'Content-Type': 'application/json-patch+json' }
         });
@@ -702,7 +704,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }
         ];
 
-        const url = `/_apis/wit/workitems/${childId}?api-version=${API_VERSION}`;
+        // 修正：加上 project 名稱於 URL
+        const url = `/${encodeURIComponent(currentProjectName)}/_apis/wit/workitems/${childId}?api-version=${API_VERSION}`;
         await instance.patch(url, patchDocument, {
           headers: { 'Content-Type': 'application/json-patch+json' }
         });
