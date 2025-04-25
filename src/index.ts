@@ -364,6 +364,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           throw new McpError(ErrorCode.InvalidParams, "缺少或無效的參數: id (數字) 和 updates (非空物件)");
         }
 
+        // 檢查 System.AssignedTo 是否為有效 email（可依實際需求調整驗證規則）
+        if (updates["System.AssignedTo"] && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(updates["System.AssignedTo"])) {
+          throw new McpError(ErrorCode.InvalidParams, "System.AssignedTo 必須為有效的 email 格式。");
+        }
+
         const patchDocument = Object.entries(updates).map(([key, value]) => ({
           op: "replace",
           path: `/fields/${key}`,
@@ -374,7 +379,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           patchDocument.push({ op: "add", path: "/fields/System.History", value: comment });
         }
 
-        const url = `/_apis/wit/workitems/${id}?api-version=${API_VERSION}`;
+        // 修正：加上 project 名稱於 URL，避免 owner/project 錯誤
+        const url = `/${encodeURIComponent(currentProjectName)}/_apis/wit/workitems/${id}?api-version=${API_VERSION}`;
         await instance.patch(url, patchDocument, {
           headers: { 'Content-Type': 'application/json-patch+json' }
         });
