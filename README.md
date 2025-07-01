@@ -10,6 +10,7 @@ This is a TypeScript-based MCP server designed to interact with Azure DevOps Wor
 
 This server provides the following tools to manage Azure DevOps resources:
 
+#### Core Work Item Operations
 - **`create_work_item`**: 在 Azure DevOps 中建立新的 Work Item (例如 User Story, Bug, Task)。
   - 必要參數：`type` (類型), `title` (標題)。
   - 可選參數：`projectName` (專案名稱，預設為伺服器偵測到的第一個專案), `description` (描述), `areaPath` (區域路徑，預設為目標專案名稱), `iterationPath` (迭代路徑，預設為目標專案名稱), `assignedTo` (指派對象), `tags` (標籤)。
@@ -19,6 +20,19 @@ This server provides the following tools to manage Azure DevOps resources:
 - **`update_work_item`**: 更新現有 Azure DevOps Work Item 的欄位 (例如狀態、指派對象)。
   - 必要參數：`id` (Work Item ID), `updates` (包含要更新欄位和值的物件)。
   - 可選參數：`comment` (更新評論)。
+- **`delete_work_item`**: 刪除指定的 Azure DevOps Work Item 並將其移至回收站。🆕
+  - 必要參數：`id` (Work Item ID)。
+  - 可選參數：`destroy` (是否永久刪除，預設 false), `projectName` (專案名稱)。
+
+#### Batch Operations 🆕
+- **`get_work_items_batch`**: 批次獲取多個 Azure DevOps Work Items（最多200個）。
+  - 必要參數：`ids` (Work Item ID 列表)。
+  - 可選參數：`fields` (欄位列表), `asOf` (指定時間點), `expand` (展開選項)。
+- **`batch_update_work_items`**: 批次更新多個 Azure DevOps Work Items。可在單一請求中執行多個建立、更新或刪除操作。
+  - 必要參數：`operations` (批次操作列表)。
+  - 可選參數：`bypassRules` (略過規則), `suppressNotifications` (抑制通知)。
+
+#### Search and Query
 - **`search_work_items`**: 搜尋 Azure DevOps Work Items。提供多樣化的篩選條件和排序選項。
   - 可選參數：
     - `query`: 搜尋關鍵字（搜尋標題、描述或 ID）
@@ -36,22 +50,45 @@ This server provides the following tools to manage Azure DevOps resources:
     - 總筆數和是否有更多結果
     - 每個項目的詳細資訊，包含 URL 連結
     - 格式化的摘要顯示
+
+#### Project Management
 - **`list_projects`**: 列出 Azure DevOps 組織中的所有專案。
 - **`get_project_details`**: 根據專案 ID 或名稱取得 Azure DevOps 專案的詳細資訊。
   - 必要參數：`projectIdOrName` (專案 ID 或名稱)。
+
+#### Integration and Linking
 - **`link_commit_to_work_item`**: 將 Git Commit 連結到 Azure DevOps Work Item。
   - 必要參數：`workItemId` (Work Item ID), `commitSha` (Commit SHA), `repositoryName` (儲存庫名稱)。
   - 可選參數：`projectName` (專案名稱), `comment` (連結說明)。
   - *注意：已修正先前版本中因組織 URL 結尾斜線可能導致的連結錯誤。*
+- **`link_parent_work_item`**: 建立 Work Item 父子關聯（將 childId 設定 parentId 為父項）。
+  - 必要參數：`childId` (子 Work Item ID), `parentId` (父 Work Item ID)
+  - 可選參數：`comment` (連結說明)
+  - 功能說明：將指定的 Work Item 設定為另一個 Work Item 的子項，並可附加說明文字。
+
+#### Attachments and Comments
 - **`list_work_item_attachments`**: 獲取指定 Azure DevOps Work Item 的附件列表，包含下載 URL。
   - 必要參數：`workItemId` (Work Item ID)。
   - 可選參數：`projectName` (專案名稱)。
 - **`add_issue_comment`**: 為現有的 Azure DevOps Work Item 添加評論。
   - 必要參數：`workItemId` (Work Item ID), `comment` (評論內容)。
-- **`link_parent_work_item`**: 建立 Work Item 父子關聯（將 childId 設定 parentId 為父項）。
-  - 必要參數：`childId` (子 Work Item ID), `parentId` (父 Work Item ID)
-  - 可選參數：`comment` (連結說明)
-  - 功能說明：將指定的 Work Item 設定為另一個 Work Item 的子項，並可附加說明文字。
+
+## 🆕 Version 0.2.0 Updates
+
+### New Features
+- **批次操作支援**：新增 `get_work_items_batch` 和 `batch_update_work_items` 工具，大幅提升處理大量 Work Items 的效率
+- **刪除功能**：新增 `delete_work_item` 工具，支援軟刪除（移至回收站）和永久刪除
+- **API 版本更新**：從 `7.2-preview` 升級至穩定版 `7.2`
+
+### Performance Improvements
+- 批次獲取最多支援 200 個 Work Items
+- 批次更新支援混合操作（建立、更新、刪除）
+- 優化錯誤處理和回應格式
+
+### API Compatibility
+- 完全相容 Azure DevOps REST API 7.2
+- 支援所有主要的 Work Item 操作
+- 保持向後相容性
 
 ## Development
 

@@ -1,6 +1,6 @@
 {
   "name": "azure-devops-mcp-server",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "透過自然語言更方便地與 Azure DevOps 互動",
   "private": true,
   "type": "module",

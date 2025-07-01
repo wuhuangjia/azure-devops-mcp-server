@@ -15,7 +15,7 @@ import { Buffer } from 'buffer'; // Needed for Basic Auth encoding
 // --- Configuration ---
 const ORG_URL = process.env.AZURE_DEVOPS_ORG_URL as string; // e.g., https://dev.azure.com/YourOrgName
 const PAT = process.env.AZURE_DEVOPS_PAT as string;
-const API_VERSION = "7.2-preview"; // Use a consistent API version
+const API_VERSION = "7.2"; // Use a consistent API version
 
 if (!ORG_URL || !PAT) {
   console.error("Missing required environment variables: AZURE_DEVOPS_ORG_URL and/or AZURE_DEVOPS_PAT. Please set them in the MCP settings.");
@@ -84,7 +84,7 @@ async function getProjectName(): Promise<string> {
 const server = new Server(
   {
     name: "azure-devops-mcp-server",
-    version: "0.1.1", // Increment version due to new features
+    version: "0.2.0", // Increment version due to new features
     description: "透過自然語言更方便地與 Azure DevOps 互動 (MVP - using axios)",
   },
   {
@@ -238,6 +238,61 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           },
           required: ["childId", "parentId"]
         }
+      },
+      {
+        name: "delete_work_item",
+        description: "刪除指定的 Azure DevOps Work Item 並將其移至回收站。",
+        inputSchema: {
+          type: "object",
+          properties: {
+            id: { type: "number", description: "要刪除的 Work Item ID" },
+            destroy: { type: "boolean", description: "是否永久刪除（預設 false，會移至回收站）", default: false },
+            projectName: { type: "string", description: "專案名稱 (可選，預設為伺服器偵測到的第一個專案)" },
+          },
+          required: ["id"],
+        },
+      },
+      {
+        name: "get_work_items_batch",
+        description: "批次獲取多個 Azure DevOps Work Items（最多200個）。",
+        inputSchema: {
+          type: "object",
+          properties: {
+            ids: { type: "array", items: { type: "number" }, description: "要獲取的 Work Item ID 列表（最多200個）" },
+            fields: { type: "array", items: { type: "string" }, description: "要取得的欄位列表 (可選，使用欄位參考名稱)" },
+            asOf: { type: "string", description: "指定時間點的 Work Item 狀態 (ISO 8601 格式，可選)" },
+            expand: { type: "string", description: "展開選項 (可選，例如 'relations', 'fields')" },
+          },
+          required: ["ids"],
+        },
+      },
+      {
+        name: "batch_update_work_items",
+        description: "批次更新多個 Azure DevOps Work Items。可在單一請求中執行多個建立、更新或刪除操作。",
+        inputSchema: {
+          type: "object",
+          properties: {
+            operations: {
+              type: "array",
+              description: "批次操作列表",
+              items: {
+                type: "object",
+                properties: {
+                  method: { type: "string", description: "HTTP 方法 (PATCH, POST, DELETE)", enum: ["PATCH", "POST", "DELETE"] },
+                  workItemId: { type: "number", description: "Work Item ID (更新/刪除時使用)" },
+                  workItemType: { type: "string", description: "Work Item 類型 (建立時使用)" },
+                  projectName: { type: "string", description: "專案名稱 (可選)" },
+                  updates: { type: "object", description: "要更新的欄位 (PATCH 時使用)" },
+                  fields: { type: "object", description: "要設定的欄位 (POST 時使用)" },
+                },
+                required: ["method"]
+              }
+            },
+            bypassRules: { type: "boolean", description: "是否略過工作項目類型規則 (預設 false)", default: false },
+            suppressNotifications: { type: "boolean", description: "是否抑制通知 (預設 false)", default: false },
+          },
+          required: ["operations"],
+        },
       },
     ],
   };
@@ -712,6 +767,147 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         return {
           content: [{ type: "text", text: `成功將 Work Item ${childId} 設定父項為 ${parentId}` }],
+        };
+      }
+
+      case "delete_work_item": {
+        const id = args.id as number;
+        const destroy = args.destroy as boolean ?? false;
+        const targetProjectName = args.projectName as string | undefined ?? currentProjectName;
+
+        if (typeof id !== 'number') {
+          throw new McpError(ErrorCode.InvalidParams, "缺少或無效的參數: id (必須是數字)");
+        }
+
+        const url = `/${encodeURIComponent(targetProjectName)}/_apis/wit/workitems/${id}?api-version=${API_VERSION}${destroy ? '&destroy=true' : ''}`;
+        await instance.delete(url);
+
+        return {
+          content: [{ type: "text", text: `成功${destroy ? '永久刪除' : '刪除'} Work Item ${id}${destroy ? '' : '（已移至回收站）'}` }],
+        };
+      }
+
+      case "get_work_items_batch": {
+        const ids = args.ids as number[];
+        const requestedFields = args.fields as string[] | undefined;
+        const asOf = args.asOf as string | undefined;
+        const expand = args.expand as string | undefined;
+
+        if (!Array.isArray(ids) || ids.length === 0) {
+          throw new McpError(ErrorCode.InvalidParams, "缺少或無效的參數: ids (必須是非空數組)");
+        }
+
+        if (ids.length > 200) {
+          throw new McpError(ErrorCode.InvalidParams, "ids 數組長度不能超過 200");
+        }
+
+        const batchRequest: any = {
+          ids: ids,
+          fields: requestedFields
+        };
+
+        if (asOf) batchRequest.asOf = asOf;
+        if (expand) batchRequest['$expand'] = expand;
+
+        const url = `/_apis/wit/workitemsbatch?api-version=${API_VERSION}`;
+        const response = await instance.post(url, batchRequest);
+
+        const workItems = response.data.value;
+        const summaryText = `成功獲取 ${workItems.length} 個 Work Items:\n\n` +
+          workItems.map((item: any) => {
+            const fields = item.fields || {};
+            return `[${item.id}] ${fields['System.WorkItemType']} (${fields['System.State']})\n` +
+              `標題: ${fields['System.Title']}\n` +
+              `指派給: ${fields['System.AssignedTo']?.displayName || '未指派'}\n`;
+          }).join('\n---\n\n');
+
+        return {
+          content: [{ type: "text", text: summaryText }],
+        };
+      }
+
+      case "batch_update_work_items": {
+        const operations = args.operations as any[];
+        const bypassRules = args.bypassRules as boolean ?? false;
+        const suppressNotifications = args.suppressNotifications as boolean ?? false;
+
+        if (!Array.isArray(operations) || operations.length === 0) {
+          throw new McpError(ErrorCode.InvalidParams, "缺少或無效的參數: operations (必須是非空數組)");
+        }
+
+        // 構建批次請求
+        const batchRequests = operations.map((op, index) => {
+          const method = op.method as string;
+          const workItemId = op.workItemId as number;
+          const workItemType = op.workItemType as string;
+          const targetProjectName = op.projectName as string | undefined ?? currentProjectName;
+          const updates = op.updates as Record<string, any>;
+          const fields = op.fields as Record<string, any>;
+
+          let uri: string;
+          let body: any[] = [];
+
+          switch (method) {
+            case 'PATCH':
+              if (!workItemId) {
+                throw new McpError(ErrorCode.InvalidParams, `操作 ${index}: PATCH 方法需要 workItemId`);
+              }
+              uri = `/${encodeURIComponent(targetProjectName)}/_apis/wit/workitems/${workItemId}?api-version=${API_VERSION}`;
+              if (updates) {
+                body = Object.entries(updates).map(([key, value]) => ({
+                  op: "replace",
+                  path: `/fields/${key}`,
+                  value: value
+                }));
+              }
+              break;
+            case 'POST':
+              if (!workItemType) {
+                throw new McpError(ErrorCode.InvalidParams, `操作 ${index}: POST 方法需要 workItemType`);
+              }
+              uri = `/${encodeURIComponent(targetProjectName)}/_apis/wit/workitems/$${encodeURIComponent(workItemType)}?api-version=${API_VERSION}`;
+              if (fields) {
+                body = Object.entries(fields).map(([key, value]) => ({
+                  op: "add",
+                  path: `/fields/${key}`,
+                  value: value
+                }));
+              }
+              break;
+            case 'DELETE':
+              if (!workItemId) {
+                throw new McpError(ErrorCode.InvalidParams, `操作 ${index}: DELETE 方法需要 workItemId`);
+              }
+              uri = `/${encodeURIComponent(targetProjectName)}/_apis/wit/workitems/${workItemId}?api-version=${API_VERSION}`;
+              break;
+            default:
+              throw new McpError(ErrorCode.InvalidParams, `操作 ${index}: 不支援的方法 ${method}`);
+          }
+
+          return {
+            method: method,
+            uri: uri,
+            headers: {
+              'Content-Type': 'application/json-patch+json'
+            },
+            body: body
+          };
+        });
+
+        let url = `/_apis/wit/$batch?api-version=${API_VERSION}`;
+        if (bypassRules) url += '&bypassRules=true';
+        if (suppressNotifications) url += '&suppressNotifications=true';
+
+        const response = await instance.patch(url, batchRequests, {
+          headers: { 'Content-Type': 'application/json' }
+        });
+
+        const results = response.data.value;
+        const successCount = results.filter((r: any) => r.code >= 200 && r.code < 300).length;
+        const errorCount = results.length - successCount;
+
+        return {
+          content: [{ type: "text", text: `批次操作完成：${successCount} 個成功，${errorCount} 個失敗` }],
         };
       }
 
